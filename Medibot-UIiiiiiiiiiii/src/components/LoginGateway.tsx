@@ -1,20 +1,14 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState } from 'react';
-import { 
-  Stethoscope, 
-  User, 
-  Lock, 
-  Mail, 
-  Fingerprint, 
-  Activity, 
-  ShieldCheck, 
-  BrainCircuit, 
+import {
+  Stethoscope,
+  User,
+  Lock,
+  Mail,
+  Activity,
+  ShieldCheck,
+  BrainCircuit,
   Loader2,
-  ChevronRight
+  Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -46,139 +40,161 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 font-sans selection:bg-sky-100">
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-sky-100/50 rounded-full blur-3xl" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-100/50 rounded-full blur-3xl" />
-      </div>
+    <div className="min-h-screen bg-[#0F1015] text-slate-200 font-sans flex flex-col md:flex-row overflow-hidden selection:bg-sky-500/30">
 
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md z-10"
-      >
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-sky-500 rounded-2xl shadow-lg shadow-sky-200 mb-4">
-            <Stethoscope className="text-white w-10 h-10" />
+      {/* Left Column - Form */}
+      <div className="w-full md:w-2/5 flex flex-col p-8 md:p-12 lg:p-16 relative z-10 border-r border-white/5 bg-[#121318]">
+        <div className="flex items-center gap-3 mb-16">
+          <div className="w-10 h-10 bg-sky-500/10 ring-1 ring-sky-500/20 rounded-xl flex items-center justify-center shadow-lg shadow-sky-500/20">
+            <Stethoscope className="text-sky-400 w-6 h-6" />
           </div>
-          <h1 className="text-4xl font-bold text-slate-900 tracking-tight">
-            Medi<span className="text-sky-500">BOT</span>
-          </h1>
-          <p className="text-slate-500 mt-2 font-medium">
-            AI-Powered Intelligent Healthcare Ecosystem
-          </p>
+          <span className="text-xl font-bold text-white tracking-tight">
+            Medi<span className="text-sky-400">BOT</span>
+          </span>
         </div>
 
-        <div className="bg-white/80 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl shadow-slate-200/50 overflow-hidden">
-          <div className="flex p-1 bg-slate-100/50 m-6 rounded-xl border border-slate-200/50">
-            <button
-              onClick={() => setRole('patient')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
-                role === 'patient' ? 'bg-white text-sky-600 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <User size={18} /> Patient
-            </button>
-            <button
-              onClick={() => setRole('doctor')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
-                role === 'doctor' ? 'bg-white text-sky-600 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <Stethoscope size={18} /> Doctor
-            </button>
-          </div>
+        <motion.div
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="flex-1 flex flex-col justify-center max-w-[320px] w-full mx-auto"
+        >
+          <h1 className="text-3xl md:text-4xl font-bold text-white mb-4">
+            Intelligent <br className="hidden md:block" /> Healthcare Ecosystem.
+          </h1>
+          <p className="text-slate-400 text-sm mb-12 leading-relaxed">
+            Build competence, career, and network in the future of medical AI.
+          </p>
 
-          <div className="px-8 pb-8">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={role}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
-                className="mb-6"
-              >
-                <p className="text-slate-600 text-sm leading-relaxed">
-                  {role === 'patient' 
-                    ? 'Access your medical history, wearable trends, and AI diagnostics.' 
-                    : 'Review clinical cases, analyze X-rays, and manage prescriptions.'}
-                </p>
-              </motion.div>
-            </AnimatePresence>
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div>
+              <label className="block text-xs font-bold text-slate-400 mb-2">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="block w-full border-b border-white/10 bg-transparent pb-3 text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors text-sm"
+                placeholder="your.email@domain.com"
+              />
+            </div>
 
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Email Address</label>
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                    <Mail className="h-5 w-5 text-slate-400 group-focus-within:text-sky-500 transition-colors" />
-                  </div>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="block w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition-all"
-                    placeholder="name@hospital.com"
-                  />
-                </div>
-              </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-400 mb-2">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="block w-full border-b border-white/10 bg-transparent pb-3 text-white placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors text-sm"
+                placeholder="••••••••"
+              />
+            </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1.5 ml-1">
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">Password</label>
-                  <a href="#" className="text-xs font-semibold text-sky-600 hover:text-sky-700 transition-colors">Forgot Password?</a>
-                </div>
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                    <Lock className="h-5 w-5 text-slate-400 group-focus-within:text-sky-500 transition-colors" />
-                  </div>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="block w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition-all"
-                    placeholder="••••••••"
-                  />
-                </div>
-              </div>
+            {error && <p className="text-red-400 text-xs font-medium">{error}</p>}
 
-              {error && <p className="text-red-500 text-xs font-medium mt-1 ml-1">{error}</p>}
-
+            <div className="pt-2">
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-600 disabled:bg-sky-300 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-sky-200 transition-all active:scale-[0.98]"
+                className="w-32 flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-400 disabled:bg-sky-500/50 text-white font-bold py-2.5 rounded-full shadow-lg shadow-sky-500/20 transition-all text-sm mb-6"
               >
-                {isLoading ? (
-                  <><Loader2 className="animate-spin h-5 w-5" /><span>Verifying MediBOT Credentials...</span></>
-                ) : (
-                  <><span className="mr-1">Sign In to Dashboard</span><ChevronRight size={18} /></>
-                )}
+                {isLoading ? <Loader2 className="animate-spin h-4 w-4" /> : <span>Login</span>}
               </button>
-            </form>
+            </div>
+          </form>
 
-            <div className="mt-8 pt-6 border-t border-slate-100 text-center">
-              <p className="text-slate-400 text-xs font-medium mb-4">Or continue with Biometrics</p>
-              <button className="inline-flex items-center justify-center w-12 h-12 rounded-full border border-slate-200 text-slate-400 hover:text-sky-500 hover:border-sky-200 hover:bg-sky-50 transition-all">
-                <Fingerprint size={24} />
+          <div className="text-xs text-slate-400 flex items-center gap-1">
+            <span>Dont have an account?</span>
+            <a href="#" className="text-sky-400 font-bold hover:text-sky-300">Sign up</a>
+          </div>
+
+          <div className="mt-12 pt-8 border-t border-white/5">
+            <p className="text-[10px] text-slate-500 mb-3 uppercase tracking-widest font-bold">Select Dashboard Role</p>
+            <div className="flex p-1 bg-[#1A1C23] rounded-xl border border-white/5">
+              <button
+                onClick={() => setRole('patient')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${role === 'patient' ? 'bg-sky-500/10 text-sky-400 ring-1 ring-sky-500/20 shadow-lg' : 'text-slate-500 hover:text-white'
+                  }`}
+              >
+                <User size={16} /> Patient
+              </button>
+              <button
+                onClick={() => setRole('doctor')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${role === 'doctor' ? 'bg-sky-500/10 text-sky-400 ring-1 ring-sky-500/20 shadow-lg' : 'text-slate-500 hover:text-white'
+                  }`}
+              >
+                <Stethoscope size={16} /> Doctor
               </button>
             </div>
           </div>
+        </motion.div>
+      </div>
+
+      {/* Right Column - Visual/Graphic */}
+      <div className="hidden md:flex flex-col flex-1 bg-[#0F1015] relative overflow-hidden">
+        {/* Top Nav matching the design */}
+        <div className="absolute top-0 right-0 left-0 px-12 py-8 flex justify-end gap-10 items-center z-20 text-sm font-semibold text-slate-400">
+          <a href="#" className="hover:text-white transition-colors">Forsiden</a>
+          <a href="#" className="hover:text-white transition-colors">Om NHP</a>
+          <a href="#" className="hover:text-white transition-colors">Ny bruker</a>
+          <button className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+            <Menu className="w-5 h-5 text-slate-400" />
+          </button>
         </div>
 
-        <div className="mt-8 flex flex-wrap justify-center gap-3">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-white/50 backdrop-blur-sm rounded-full border border-slate-200/50 shadow-sm">
-            <BrainCircuit size={14} className="text-emerald-500" /><span className="text-[10px] font-bold text-slate-600 uppercase tracking-tight">LLaMA2-7B: Active</span>
-          </div>
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-white/50 backdrop-blur-sm rounded-full border border-slate-200/50 shadow-sm">
-            <Activity size={14} className="text-sky-500" /><span className="text-[10px] font-bold text-slate-600 uppercase tracking-tight">ResNet50: Online</span>
-          </div>
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-white/50 backdrop-blur-sm rounded-full border border-slate-200/50 shadow-sm">
-            <ShieldCheck size={14} className="text-indigo-500" /><span className="text-[10px] font-bold text-slate-600 uppercase tracking-tight">Secure Encryption: Enabled</span>
-          </div>
+        {/* Abstract Dark Medical Illustration Area */}
+        <div className="absolute inset-0 flex items-center justify-center p-12">
+          {/* Abstract background blobs for dark mode vibe */}
+          <div className="absolute top-[20%] right-[10%] w-[400px] h-[400px] bg-sky-500/10 rounded-full blur-[100px]" />
+          <div className="absolute bottom-[20%] left-[20%] w-[300px] h-[300px] bg-indigo-500/10 rounded-full blur-[100px]" />
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.2, duration: 0.5 }}
+            className="w-full max-w-2xl relative"
+          >
+            {/* Soft curved background shape */}
+            <div className="absolute inset-0 bg-gradient-to-br from-[#1A1C23] to-[#121318] rounded-[60px] transform -rotate-2 scale-105 border border-white/5 shadow-2xl shadow-black/50" />
+
+            <div className="relative glass-card border-white/10 rounded-[40px] p-12 overflow-hidden flex flex-col items-center justify-center min-h-[450px]">
+              <div className="w-48 h-48 rounded-full border border-sky-500/30 flex items-center justify-center relative mb-8 backdrop-blur-3xl">
+                <div className="absolute inset-0 bg-sky-500/5 rounded-full animate-pulse" />
+                <BrainCircuit className="w-20 h-20 text-sky-400" />
+                <div className="absolute -top-4 -right-4 w-14 h-14 glass-card rounded-full flex items-center justify-center border-white/10 shadow-xl">
+                  <Activity className="w-6 h-6 text-emerald-400" />
+                </div>
+                <div className="absolute -bottom-2 -left-4 w-12 h-12 glass-card rounded-full flex items-center justify-center border-white/10 shadow-xl">
+                  <ShieldCheck className="w-5 h-5 text-indigo-400" />
+                </div>
+              </div>
+
+              <h3 className="text-2xl font-bold text-white mb-3">AI Clinical Intelligence</h3>
+              <p className="text-center text-slate-400 max-w-sm text-sm leading-relaxed">
+                Experience seamless integration between clinical context, real-time vitals, and predictive diagnostics.
+              </p>
+            </div>
+          </motion.div>
         </div>
-      </motion.div>
-      <footer className="mt-auto py-6 text-slate-400 text-xs font-medium">&copy; 2026 MediBOT Healthcare Systems. All Rights Reserved.</footer>
+
+        {/* Bottom Banner as seen in the image - adapted for dark mode */}
+        <div className="absolute bottom-10 left-0 right-0 px-12 flex justify-center z-20">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+            className="glass-card rounded-full px-8 py-3 flex items-center gap-6 border-white/10 max-w-2xl w-full shadow-2xl"
+          >
+            <span className="text-slate-400 text-sm font-semibold whitespace-nowrap">Want to Get Started.</span>
+            <div className="flex-1 flex items-center gap-2 bg-[#121318]/50 rounded-full pl-4 pr-1 py-1 border border-white/5 focus-within:border-sky-500/30 transition-colors">
+              <input type="email" placeholder="Your email" className="bg-transparent border-none outline-none text-sm text-white w-full py-1.5" />
+              <button className="bg-sky-500 hover:bg-sky-400 text-white text-xs font-bold py-2 px-6 rounded-full transition-colors whitespace-nowrap">
+                Send
+              </button>
+            </div>
+            <a href="#" className="hidden sm:block text-sky-400 text-xs font-bold hover:text-sky-300">Join us.</a>
+          </motion.div>
+        </div>
+
+      </div>
     </div>
   );
 }
