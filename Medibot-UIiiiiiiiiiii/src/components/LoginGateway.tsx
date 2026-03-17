@@ -11,6 +11,14 @@ import {
   Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithPopup
+} from 'firebase/auth';
+import { auth, db } from '../lib/firebase';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 
 type Role = 'patient' | 'doctor';
 
@@ -22,6 +30,7 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
   const [role, setRole] = useState<Role>('patient');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -33,10 +42,72 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
     }
     setError('');
     setIsLoading(true);
-    setTimeout(() => {
+
+    try {
+      if (isSignUp) {
+        // Handle Sign Up
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+
+        // Store role in Firestore
+        await setDoc(doc(db, 'users', user.uid), {
+          email: user.email,
+          role: role,
+          createdAt: new Date().toISOString()
+        });
+
+        onLogin(role, email);
+      } else {
+        // Handle Sign In
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+
+        // Fetch role from Firestore
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          onLogin(userData.role as Role, email);
+        } else {
+          // Fallback to selected role if doc doesn't exist
+          onLogin(role, email);
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Authentication failed');
+    } finally {
       setIsLoading(false);
-      onLogin(role, email);
-    }, 2000);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setIsLoading(true);
+    setError('');
+    const provider = new GoogleAuthProvider();
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+
+      // Check if user already has a role
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        onLogin(userData.role as Role, user.email || '');
+      } else {
+        // New Google user, save selected role
+        await setDoc(doc(db, 'users', user.uid), {
+          email: user.email,
+          role: role,
+          createdAt: new Date().toISOString()
+        });
+        onLogin(role, user.email || '');
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Google Auth failed');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -59,10 +130,12 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
           className="flex-1 flex flex-col justify-center max-w-[320px] w-full mx-auto"
         >
           <h1 className="text-3xl md:text-4xl font-bold text-white mb-4">
-            Intelligent <br className="hidden md:block" /> Healthcare Ecosystem.
+            {isSignUp ? 'Create Your Account.' : 'Intelligent Healthcare Ecosystem.'}
           </h1>
-          <p className="text-slate-400 text-sm mb-12 leading-relaxed">
-            Build competence, career, and network in the future of medical AI.
+          <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+            {isSignUp 
+              ? 'Join the future of AI-driven medical assistance today.' 
+              : 'Build competence, career, and network in the future of medical AI.'}
           </p>
 
           <form onSubmit={handleLogin} className="space-y-6">
@@ -90,20 +163,42 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
 
             {error && <p className="text-red-400 text-xs font-medium">{error}</p>}
 
-            <div className="pt-2">
+            <div className="pt-2 space-y-4">
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-32 flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-400 disabled:bg-sky-500/50 text-white font-bold py-2.5 rounded-full shadow-lg shadow-sky-500/20 transition-all text-sm mb-6"
+                className="w-full flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-400 disabled:bg-sky-500/50 text-white font-bold py-3 rounded-xl shadow-lg shadow-sky-500/20 transition-all text-sm"
               >
-                {isLoading ? <Loader2 className="animate-spin h-4 w-4" /> : <span>Login</span>}
+                {isLoading ? <Loader2 className="animate-spin h-4 w-4" /> : <span>{isSignUp ? 'Create Account' : 'Login'}</span>}
+              </button>
+
+              <div className="relative py-4">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
+                <div className="relative flex justify-center text-[10px] uppercase tracking-widest font-bold text-slate-500">
+                  <span className="bg-[#121318] px-4">Or continue with</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={isLoading}
+                className="w-full flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 text-white font-semibold py-3 rounded-xl border border-white/10 transition-all text-sm"
+              >
+                <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="Google" />
+                Google
               </button>
             </div>
           </form>
 
-          <div className="text-xs text-slate-400 flex items-center gap-1">
-            <span>Dont have an account?</span>
-            <a href="#" className="text-sky-400 font-bold hover:text-sky-300">Sign up</a>
+          <div className="mt-8 text-xs text-slate-400 flex items-center gap-1">
+            <span>{isSignUp ? 'Already have an account?' : "Don't have an account?"}</span>
+            <button 
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-sky-400 font-bold hover:text-sky-300 ml-1"
+            >
+              {isSignUp ? 'Login' : 'Sign up'}
+            </button>
           </div>
 
           <div className="mt-12 pt-8 border-t border-white/5">
