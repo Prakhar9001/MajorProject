@@ -4,7 +4,15 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { saveChatMessage, getChatHistory } from '../lib/db';
+import toast from 'react-hot-toast';
+import { QRCodeSVG } from 'qrcode.react';
+import ErrorBoundary from './ErrorBoundary';
+import { saveChatMessage, getChatHistory, saveDiagnosticResult, saveVitalsSnapshot, getUnsyncedRecords, markAsSynced } from '../lib/db';
+import { collection, addDoc, getDocs, getDoc, updateDoc, doc, serverTimestamp, orderBy, query, where } from 'firebase/firestore';
+import { db as firestoreDb } from '../lib/firebase';
+import { auth } from '../lib/firebase';
+import { usePatientStore } from '../store/usePatientStore';
+import apiClient from '../lib/apiClient';
 import {
   Stethoscope,
   User,
@@ -123,7 +131,7 @@ const Sidebar = ({ activeTab, setActiveTab, onLogout, isOpen, setIsOpen }: {
   );
 };
 
-const Header = ({ patientName, onMenuClick }: { patientName: string, onMenuClick: () => void }) => (
+const Header = ({ patientName, uid, onMenuClick }: { patientName: string, uid: string | null, onMenuClick: () => void }) => (
   <header className="h-20 glass-card border-b backdrop-blur-md sticky top-0 z-20 border-white/5 px-4 md:px-8 flex items-center justify-between sticky top-0 z-20">
     <div className="flex items-center gap-4">
       <button
@@ -134,9 +142,11 @@ const Header = ({ patientName, onMenuClick }: { patientName: string, onMenuClick
       </button>
       <div>
         <h2 className="text-lg md:text-xl font-bold text-white truncate max-w-[150px] md:max-w-none">
-          Hi, <span className="text-sky-400">{patientName.split(' ')[0]}</span>
+          Hi, <span className="text-sky-400">{patientName.split(' ')[0] || 'Patient'}</span>
         </h2>
-        <p className="hidden md:block text-xs text-slate-400 font-medium mt-0.5">Patient ID: #MB-99281-X</p>
+        <p className="hidden md:block text-xs text-slate-400 font-medium mt-0.5">
+          Patient ID: #{uid ? uid.slice(0, 8).toUpperCase() : '--------'}
+        </p>
       </div>
     </div>
     <div className="flex items-center gap-2 md:gap-4">
@@ -151,15 +161,101 @@ const Header = ({ patientName, onMenuClick }: { patientName: string, onMenuClick
   </header>
 );
 
-const HealthOverview = () => (
+interface VitalsProps {
+  heartRate: number;
+  spo2: number;
+  steps: number;
+  uid: string | null;
+}
+
+const HealthOverview = ({ heartRate, spo2, steps, uid }: VitalsProps) => {
+  const [showVitalsModal, setShowVitalsModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ heartRate: String(heartRate), spo2: String(spo2), steps: String(steps) });
+  const { updateProfile } = usePatientStore();
+
+  const handleSaveVitals = async () => {
+    if (!uid) return;
+    setSaving(true);
+    const hr = Number(form.heartRate);
+    const o2 = Number(form.spo2);
+    const st = Number(form.steps);
+    try {
+      await updateDoc(doc(firestoreDb, 'patients', uid), {
+        'recentVitals.heartRate': hr,
+        'recentVitals.spo2': o2,
+        'recentVitals.steps': st,
+        'recentVitals.timestamp': new Date().toISOString(),
+      });
+      await saveVitalsSnapshot(uid, hr, o2, st, 'manual');
+      updateProfile({ recentVitals: { heartRate: hr, spo2: o2, steps: st } });
+      setShowVitalsModal(false);
+      toast.success('Vitals updated');
+    } catch (e) {
+      console.error('Failed to save vitals:', e);
+      toast.error('Failed to save vitals');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
   <div className="space-y-6">
     <div className="flex items-center justify-between">
       <h3 className="text-lg font-bold text-white">Live Vitals</h3>
-      <div className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 ring-1 ring-emerald-500/20 rounded-full border border-emerald-500/20">
-        <Watch size={14} className="text-emerald-500" />
-        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Watch Syncing</span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setShowVitalsModal(true)}
+          className="flex items-center gap-2 px-3 py-1 bg-sky-500/10 ring-1 ring-sky-500/20 rounded-full border border-sky-500/20 hover:bg-sky-500/20 transition-colors"
+        >
+          <Watch size={14} className="text-sky-500" />
+          <span className="text-[10px] font-bold text-sky-400 uppercase tracking-wider">Update Vitals</span>
+        </button>
       </div>
     </div>
+
+    <AnimatePresence>
+      {showVitalsModal && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4"
+        >
+          <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
+            className="bg-[#1A1C23] p-8 rounded-[2rem] shadow-2xl max-w-sm w-full border border-white/10"
+          >
+            <h4 className="text-xl font-bold text-white mb-6">Update Vitals</h4>
+            <div className="space-y-4">
+              {[
+                { label: 'Heart Rate (bpm)', key: 'heartRate', min: 30, max: 250 },
+                { label: 'Blood Oxygen SpO₂ (%)', key: 'spo2', min: 50, max: 100 },
+                { label: 'Daily Steps', key: 'steps', min: 0, max: 99999 },
+              ].map(({ label, key, min, max }) => (
+                <div key={key}>
+                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">{label}</label>
+                  <input
+                    type="number" min={min} max={max}
+                    value={form[key as keyof typeof form]}
+                    onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                    className="w-full bg-[#0F1015] border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={handleSaveVitals} disabled={saving}
+                className="flex-1 py-3 bg-sky-500 text-white rounded-xl text-sm font-bold hover:bg-sky-600 transition-all disabled:opacity-50"
+              >
+                {saving ? 'Saving...' : 'Save Vitals'}
+              </button>
+              <button onClick={() => setShowVitalsModal(false)}
+                className="px-6 py-3 bg-[#0F1015] text-slate-400 border border-white/5 rounded-xl text-sm font-bold hover:text-white transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
 
     {/* Top Charts Row */}
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -232,7 +328,7 @@ const HealthOverview = () => (
           <span className="text-[10px] font-bold text-slate-500 uppercase">Heart Rate</span>
         </div>
         <div className="flex items-baseline gap-1">
-          <span className="text-2xl font-bold text-white">72</span>
+          <span className="text-2xl font-bold text-white">{heartRate}</span>
           <span className="text-slate-400 text-xs">bpm</span>
         </div>
       </div>
@@ -245,7 +341,7 @@ const HealthOverview = () => (
           <span className="text-[10px] font-bold text-slate-500 uppercase">Blood Oxygen</span>
         </div>
         <div className="flex items-baseline gap-1">
-          <span className="text-2xl font-bold text-white">98</span>
+          <span className="text-2xl font-bold text-white">{spo2}</span>
           <span className="text-slate-400 text-xs">%</span>
         </div>
       </div>
@@ -258,7 +354,7 @@ const HealthOverview = () => (
           <span className="text-[10px] font-bold text-slate-500 uppercase">Daily Steps</span>
         </div>
         <div className="flex items-baseline gap-1">
-          <span className="text-2xl font-bold text-white">4,500</span>
+          <span className="text-2xl font-bold text-white">{steps.toLocaleString()}</span>
           <span className="text-slate-400 text-xs">steps</span>
         </div>
       </div>
@@ -275,34 +371,205 @@ const HealthOverview = () => (
         </div>
       </div>
     </div>
+
+    {/* My Doctor Card */}
+    <MyDoctorCard uid={uid} />
   </div>
-);
+  );
+};
 
-const MedicalTimeline = () => {
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
+// --- Doctor Linking ---
 
-  const handleUpload = () => {
-    setUploading(true);
-    setProgress(0);
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => setUploading(false), 500);
-          return 100;
-        }
-        return prev + 5;
-      });
-    }, 150);
+interface Doctor { uid: string; email: string; displayName?: string; }
+
+const MyDoctorCard = ({ uid }: { uid: string | null }) => {
+  const { profile, updateProfile } = usePatientStore();
+  const [doctorName, setDoctorName] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [search, setSearch] = useState('');
+  const [loadingDoctors, setLoadingDoctors] = useState(false);
+  const [linking, setLinking] = useState(false);
+
+  // Resolve linked doctor name on mount
+  useEffect(() => {
+    if (!profile?.doctorUid) return;
+    getDoc(doc(firestoreDb, 'users', profile.doctorUid)).then(snap => {
+      if (snap.exists()) {
+        const d = snap.data();
+        setDoctorName(d.displayName || d.email || 'Your Doctor');
+      }
+    });
+  }, [profile?.doctorUid]);
+
+  const openModal = async () => {
+    setShowModal(true);
+    setLoadingDoctors(true);
+    try {
+      const snap = await getDocs(query(collection(firestoreDb, 'users'), where('role', '==', 'doctor')));
+      setDoctors(snap.docs.map(d => ({ uid: d.id, email: d.data().email, displayName: d.data().displayName })));
+    } catch (e) {
+      console.error('Failed to load doctors:', e);
+    } finally {
+      setLoadingDoctors(false);
+    }
   };
 
-  const events = [
-    { date: '2024.10.24', time: '10:00 AM', title: 'Major Surgery', desc: 'Appendectomy', doctor: 'Dr. Smith', type: 'surgery' },
-    { date: '2023.08.15', time: '02:30 PM', title: 'Immunization', desc: 'COVID-19 Booster', doctor: 'City Clinic', type: 'med' },
-    { date: '2022.11.05', time: '09:15 AM', title: 'Annual Checkup', desc: 'General Vitals', doctor: 'Dr. Jane', type: 'checkup' },
-    { date: '1995.05.12', time: '11:45 AM', title: 'Birth Records', desc: 'St. Mary\'s Ward', doctor: 'Dr. Adams', type: 'birth' },
-  ];
+  const linkDoctor = async (doctor: Doctor) => {
+    if (!uid) return;
+    setLinking(true);
+    try {
+      await updateDoc(doc(firestoreDb, 'patients', uid), { doctorUid: doctor.uid });
+      updateProfile({ doctorUid: doctor.uid });
+      setDoctorName(doctor.displayName || doctor.email);
+      setShowModal(false);
+      toast.success(`Linked to ${doctor.displayName || doctor.email}`);
+    } catch (e) {
+      console.error('Failed to link doctor:', e);
+      toast.error('Failed to link doctor');
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const filtered = doctors.filter(d =>
+    (d.displayName || d.email).toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <>
+      <div className="bg-[#1A1C23] p-6 rounded-3xl border border-white/5 shadow-2xl shadow-black/20">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-sky-500/10 ring-1 ring-sky-500/20 flex items-center justify-center flex-shrink-0">
+              <User size={22} className="text-sky-400" />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Linked Doctor</p>
+              <p className="text-base font-bold text-white">
+                {doctorName ?? (profile?.doctorUid ? 'Loading...' : 'No doctor linked')}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={openModal}
+            className="px-4 py-2 bg-[#0F1015] border border-white/10 rounded-xl text-xs font-bold text-slate-300 hover:border-sky-500/40 hover:text-sky-400 transition-all"
+          >
+            {profile?.doctorUid ? 'Change' : 'Select Doctor'}
+          </button>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4"
+          >
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
+              className="bg-[#1A1C23] rounded-[2rem] shadow-2xl max-w-md w-full border border-white/10 overflow-hidden"
+            >
+              <div className="p-6 border-b border-white/5">
+                <h4 className="text-lg font-bold text-white mb-4">Select Your Doctor</h4>
+                <div className="relative">
+                  <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Search by name or email..."
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="w-full bg-[#0F1015] border border-white/10 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:outline-none focus:ring-1 focus:ring-sky-500/50 placeholder-slate-500"
+                  />
+                </div>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
+                {loadingDoctors ? (
+                  <div className="p-8 flex items-center justify-center">
+                    <Loader2 className="animate-spin text-sky-500" size={24} />
+                  </div>
+                ) : filtered.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 text-sm">
+                    {doctors.length === 0 ? 'No doctors registered yet.' : 'No results.'}
+                  </div>
+                ) : filtered.map(doctor => (
+                  <button
+                    key={doctor.uid}
+                    onClick={() => linkDoctor(doctor)}
+                    disabled={linking}
+                    className="w-full flex items-center gap-4 p-4 hover:bg-[#2A2E39] transition-colors text-left disabled:opacity-50"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center flex-shrink-0">
+                      <User size={18} className="text-sky-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white">{doctor.displayName || 'Doctor'}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">{doctor.email}</p>
+                    </div>
+                    {profile?.doctorUid === doctor.uid && (
+                      <span className="ml-auto text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">Current</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <div className="p-4 border-t border-white/5">
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="w-full py-2.5 bg-[#0F1015] text-slate-400 border border-white/5 rounded-xl text-sm font-bold hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+};
+
+const MedicalTimeline = ({ uid }: { uid: string | null }) => {
+  const [events, setEvents] = useState<any[]>([]);
+  const [loadingEvents, setLoadingEvents] = useState(true);
+  const [showAddEvent, setShowAddEvent] = useState(false);
+  const [newEvent, setNewEvent] = useState({ date: '', title: '', desc: '', doctor: '', type: 'checkup' });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!uid) { setLoadingEvents(false); return; }
+    const fetchEvents = async () => {
+      try {
+        const q = query(collection(firestoreDb, 'medicalEvents', uid, 'events'), orderBy('date', 'desc'));
+        const snap = await getDocs(q);
+        setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (e) {
+        console.error('Failed to load timeline:', e);
+      } finally {
+        setLoadingEvents(false);
+      }
+    };
+    fetchEvents();
+  }, [uid]);
+
+  const handleAddEvent = async () => {
+    if (!uid || !newEvent.date || !newEvent.title) return;
+    setSaving(true);
+    try {
+      const ref = await addDoc(collection(firestoreDb, 'medicalEvents', uid, 'events'), {
+        ...newEvent,
+        createdAt: serverTimestamp(),
+      });
+      setEvents(prev => [{ id: ref.id, ...newEvent }, ...prev]);
+      setNewEvent({ date: '', title: '', desc: '', doctor: '', type: 'checkup' });
+      setShowAddEvent(false);
+      toast.success('Medical event added');
+    } catch (e) {
+      console.error('Failed to add event:', e);
+      toast.error('Failed to add event');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -312,27 +579,63 @@ const MedicalTimeline = () => {
           <button className="px-4 py-2.5 bg-[#1A1C23] border border-white/5 rounded-xl text-xs font-bold text-slate-300 hover:bg-[#2A2E39] transition-colors shadow-2xl shadow-black/20 flex items-center gap-2">
             <LayoutDashboard size={14} /> Export Records
           </button>
-          <button onClick={handleUpload} className="px-4 py-2.5 bg-sky-500 text-white rounded-xl text-xs font-bold hover:bg-sky-600 transition-colors shadow-lg shadow-sky-100 flex items-center gap-2">
-            <Upload size={14} /> Sync New Data
+          <button onClick={() => setShowAddEvent(true)} className="px-4 py-2.5 bg-sky-500 text-white rounded-xl text-xs font-bold hover:bg-sky-600 transition-colors shadow-lg shadow-sky-100 flex items-center gap-2">
+            <Plus size={14} /> Add Event
           </button>
         </div>
       </div>
 
       <AnimatePresence>
-        {uploading && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-            <div className="bg-[#1A1C23] p-5 rounded-2xl border border-sky-500/20 shadow-lg mb-2 flex items-center gap-4">
-              <Loader2 className="w-6 h-6 text-sky-500 animate-spin" />
-              <div className="flex-1">
-                <div className="flex justify-between text-xs font-bold text-white mb-2">
-                  <span>Syncing External Provider Network...</span>
-                  <span className="text-sky-400">{progress}%</span>
-                </div>
-                <div className="h-1.5 bg-[#0F1015] rounded-full overflow-hidden">
-                  <motion.div className="h-full bg-sky-500 drop-shadow-[0_0_8px_rgba(14,165,233,0.8)]" initial={{ width: 0 }} animate={{ width: `${progress}%` }} />
+        {showAddEvent && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4"
+          >
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
+              className="bg-[#1A1C23] p-8 rounded-[2rem] shadow-2xl max-w-md w-full border border-white/10"
+            >
+              <h4 className="text-xl font-bold text-white mb-6">Add Medical Event</h4>
+              <div className="space-y-4">
+                {[
+                  { label: 'Date', key: 'date', type: 'date' },
+                  { label: 'Event Title', key: 'title', type: 'text' },
+                  { label: 'Description', key: 'desc', type: 'text' },
+                  { label: 'Doctor / Provider', key: 'doctor', type: 'text' },
+                ].map(({ label, key, type }) => (
+                  <div key={key}>
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">{label}</label>
+                    <input
+                      type={type}
+                      value={newEvent[key as keyof typeof newEvent]}
+                      onChange={e => setNewEvent(n => ({ ...n, [key]: e.target.value }))}
+                      className="w-full bg-[#0F1015] border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                    />
+                  </div>
+                ))}
+                <div>
+                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Type</label>
+                  <select value={newEvent.type} onChange={e => setNewEvent(n => ({ ...n, type: e.target.value }))}
+                    className="w-full bg-[#0F1015] border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  >
+                    <option value="checkup">Checkup</option>
+                    <option value="surgery">Surgery</option>
+                    <option value="med">Medication / Immunization</option>
+                    <option value="birth">Birth Record</option>
+                  </select>
                 </div>
               </div>
-            </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={handleAddEvent} disabled={saving}
+                  className="flex-1 py-3 bg-sky-500 text-white rounded-xl text-sm font-bold hover:bg-sky-600 transition-all disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : 'Save Event'}
+                </button>
+                <button onClick={() => setShowAddEvent(false)}
+                  className="px-6 py-3 bg-[#0F1015] text-slate-400 border border-white/5 rounded-xl text-sm font-bold hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -348,6 +651,15 @@ const MedicalTimeline = () => {
 
         {/* Table Body */}
         <div className="divide-y divide-white/5">
+          {loadingEvents ? (
+            <div className="p-12 flex items-center justify-center">
+              <Loader2 className="animate-spin text-sky-500" size={28} />
+            </div>
+          ) : events.length === 0 ? (
+            <div className="p-12 text-center text-slate-500 text-sm font-bold">
+              No medical events yet. Add your first record.
+            </div>
+          ) : null}
           {events.map((event, idx) => (
             <div key={idx} className="p-4 md:px-6 flex items-center gap-4 hover:bg-[#2A2E39]/30 transition-colors group cursor-pointer">
               <div className="w-1/3 md:w-1/4">
@@ -384,15 +696,18 @@ const MedicalTimeline = () => {
   );
 };
 
-const AIDiagnosticLab = () => {
+const AIDiagnosticLab = ({ uid }: { uid: string | null }) => {
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [mode, setMode] = useState<'imaging' | 'reports'>('imaging');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleScan = async (file: File) => {
     setAnalyzing(true);
     setResult(null);
+    setSaved(false);
 
     try {
       const reader = new FileReader();
@@ -403,18 +718,10 @@ const AIDiagnosticLab = () => {
       const imageBase64 = await base64Promise;
 
       const endpoint = mode === 'imaging' ? '/api/vision/analyze_xray' : '/api/vision/extract_report';
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_base64: imageBase64,
-          patient_id: 'MB-99281-X'
-        })
+      const { data } = await apiClient.post(endpoint, {
+        image_base64: imageBase64,
+        patient_id: uid ?? 'unknown',
       });
-
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-      const data = await response.json();
       setResult(data);
     } catch (error) {
       setResult({
@@ -424,6 +731,34 @@ const AIDiagnosticLab = () => {
       });
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const handleSaveToProfile = async () => {
+    if (!uid || !result || result.type === 'error') return;
+    setSaving(true);
+    try {
+      await saveDiagnosticResult(uid, {
+        imageHash: String(Date.now()),
+        predictedClass: result.predicted_class ?? result.type ?? 'unknown',
+        severity: result.severity ?? 'Unknown',
+        confidence: result.confidence ?? '—',
+        recommendation: result.recommendation ?? result.text ?? '',
+      });
+      await addDoc(collection(firestoreDb, 'diagnostics', uid, 'results'), {
+        predictedClass: result.predicted_class ?? result.type ?? 'unknown',
+        severity: result.severity ?? 'Unknown',
+        confidence: result.confidence ?? '—',
+        recommendation: result.recommendation ?? result.text ?? '',
+        timestamp: serverTimestamp(),
+      });
+      setSaved(true);
+      toast.success('Result saved to profile');
+    } catch (e) {
+      console.error('Failed to save diagnostic:', e);
+      toast.error('Failed to save result');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -591,8 +926,12 @@ const AIDiagnosticLab = () => {
           <AnimatePresence>
             {result && (
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="p-6 border-t border-white/5 bg-[#121318]/50 flex gap-4 mt-auto">
-                <button className="flex-1 py-3 bg-sky-500 text-white rounded-xl text-sm font-bold hover:bg-sky-600 transition-all shadow-lg shadow-sky-500/20 flex items-center justify-center gap-2">
-                  Save to Profile
+                <button
+                  onClick={handleSaveToProfile}
+                  disabled={saving || saved}
+                  className="flex-1 py-3 bg-sky-500 text-white rounded-xl text-sm font-bold hover:bg-sky-600 transition-all shadow-lg shadow-sky-500/20 flex items-center justify-center gap-2 disabled:opacity-60"
+                >
+                  {saving ? 'Saving...' : saved ? 'Saved ✓' : 'Save to Profile'}
                 </button>
                 <button onClick={() => setResult(null)} className="px-6 py-3 bg-[#0F1015] text-slate-400 border border-white/5 rounded-xl text-sm font-bold hover:text-white hover:bg-slate-800 transition-all shadow-inner">
                   Clear
@@ -606,23 +945,55 @@ const AIDiagnosticLab = () => {
   );
 };
 
-const PrescriptionManager = () => {
-  const [meds, setMeds] = useState([
-    { name: 'Warfarin', dosage: '5mg', freq: 'Once daily', type: 'Anticoagulant', status: 'Active', remaining: 14, doctor: 'Dr. Smith' },
-    { name: 'Lisinopril', dosage: '10mg', freq: 'Morning', type: 'Blood Pressure', status: 'Active', remaining: 30, doctor: 'City Clinic' },
-    { name: 'Amoxicillin', dosage: '500mg', freq: 'Twice daily', type: 'Antibiotic', status: 'Completed', remaining: 0, doctor: 'Dr. Adams' },
-  ]);
+const PrescriptionManager = ({ uid }: { uid: string | null }) => {
+  const [meds, setMeds] = useState<any[]>([]);
+  const [loadingMeds, setLoadingMeds] = useState(true);
+  const [showAddMed, setShowAddMed] = useState(false);
+  const [newMed, setNewMed] = useState({ name: '', dosage: '', freq: 'Once daily', type: '', doctor: '' });
+  const [addingSaving, setAddingSaving] = useState(false);
+
+  useEffect(() => {
+    if (!uid) { setLoadingMeds(false); return; }
+    getDocs(collection(firestoreDb, 'prescriptions', uid, 'meds'))
+      .then(snap => setMeds(snap.docs.map(d => ({ id: d.id, status: 'Active', remaining: 30, ...d.data() }))))
+      .catch(e => console.error('Failed to load meds:', e))
+      .finally(() => setLoadingMeds(false));
+  }, [uid]);
+
+  const handleAddMed = async () => {
+    if (!uid || !newMed.name) return;
+    setAddingSaving(true);
+    try {
+      const ref = await addDoc(collection(firestoreDb, 'prescriptions', uid, 'meds'), {
+        ...newMed,
+        status: 'Active',
+        remaining: 30,
+        createdAt: serverTimestamp(),
+      });
+      setMeds(prev => [...prev, { id: ref.id, ...newMed, status: 'Active', remaining: 30 }]);
+      setNewMed({ name: '', dosage: '', freq: 'Once daily', type: '', doctor: '' });
+      setShowAddMed(false);
+      toast.success('Prescription added');
+    } catch (e) {
+      console.error('Failed to add med:', e);
+      toast.error('Failed to add prescription');
+    } finally {
+      setAddingSaving(false);
+    }
+  };
   const [warning, setWarning] = useState<string | null>(null);
   const [showQR, setShowQR] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const addMedicine = (name: string) => {
-    if (name === 'Aspirin') {
+  // Drug interaction check: warn if new med name overlaps with existing allergy or known interactions
+  const checkInteraction = (name: string) => {
+    const activeMeds = meds.filter(m => m.status === 'Active').map(m => m.name.toLowerCase());
+    if (name.toLowerCase() === 'aspirin' && activeMeds.some(m => m.includes('warfarin'))) {
       setWarning('Overlap detected with your current Warfarin prescription. Risk of bleeding is High. Consult your doctor.');
-      return;
+      return true;
     }
     setWarning(null);
-    setMeds([...meds, { name, dosage: '325mg', freq: 'As needed', type: 'Pain Relief', status: 'Active', remaining: 30, doctor: 'Self' }]);
+    return false;
   };
 
   return (
@@ -645,7 +1016,7 @@ const PrescriptionManager = () => {
             Pharmacy QR
           </button>
           <button
-            onClick={() => addMedicine('Aspirin')}
+            onClick={() => setShowAddMed(true)}
             className="flex items-center justify-center gap-2 px-5 py-3 bg-sky-500 text-white rounded-xl text-sm font-bold hover:bg-sky-600 transition-all shadow-lg shadow-sky-500/20 whitespace-nowrap"
           >
             <Plus size={16} />
@@ -719,13 +1090,63 @@ const PrescriptionManager = () => {
               </div>
             </div>
           ))}
-          {meds.filter(m => m.name.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && (
+          {loadingMeds && (
+            <div className="p-12 flex items-center justify-center">
+              <Loader2 className="animate-spin text-sky-500" size={28} />
+            </div>
+          )}
+          {!loadingMeds && meds.filter(m => m.name.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && (
             <div className="p-12 text-center text-slate-500 text-sm font-bold">
-              No medications matching "{searchQuery}"
+              {searchQuery ? `No medications matching "${searchQuery}"` : 'No prescriptions yet. Add your first medication.'}
             </div>
           )}
         </div>
       </div>
+
+      <AnimatePresence>
+        {showAddMed && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4"
+          >
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
+              className="bg-[#1A1C23] p-8 rounded-[2rem] shadow-2xl max-w-md w-full border border-white/10"
+            >
+              <h4 className="text-xl font-bold text-white mb-6">Add Prescription</h4>
+              <div className="space-y-4">
+                {[
+                  { label: 'Medication Name', key: 'name' },
+                  { label: 'Dosage (e.g. 5mg)', key: 'dosage' },
+                  { label: 'Frequency', key: 'freq' },
+                  { label: 'Type / Category', key: 'type' },
+                  { label: 'Prescribing Doctor', key: 'doctor' },
+                ].map(({ label, key }) => (
+                  <div key={key}>
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">{label}</label>
+                    <input
+                      type="text"
+                      value={newMed[key as keyof typeof newMed]}
+                      onChange={e => setNewMed(n => ({ ...n, [key]: e.target.value }))}
+                      className="w-full bg-[#0F1015] border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={handleAddMed} disabled={addingSaving}
+                  className="flex-1 py-3 bg-sky-500 text-white rounded-xl text-sm font-bold hover:bg-sky-600 transition-all disabled:opacity-50"
+                >
+                  {addingSaving ? 'Saving...' : 'Add Medication'}
+                </button>
+                <button onClick={() => setShowAddMed(false)}
+                  className="px-6 py-3 bg-[#0F1015] text-slate-400 border border-white/5 rounded-xl text-sm font-bold hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {showQR && (
@@ -742,9 +1163,18 @@ const PrescriptionManager = () => {
               className="bg-[#1A1C23] p-8 rounded-[2rem] shadow-2xl max-w-sm w-full text-center border border-white/10 relative overflow-hidden"
             >
               <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-transparent via-indigo-500 to-transparent"></div>
-              <div className="w-56 h-56 bg-white rounded-3xl mx-auto mb-8 flex items-center justify-center p-4 shadow-xl">
-                <QrCode size={180} className="text-slate-900" />
-              </div>
+              {(() => {
+                const activeMeds = meds.filter(m => m.status === 'Active');
+                const qrPayload = JSON.stringify({
+                  meds: activeMeds.map(m => `${m.name} ${m.dosage} ${m.freq}`),
+                  generated: new Date().toISOString(),
+                });
+                return (
+                  <div className="w-56 h-56 bg-white rounded-3xl mx-auto mb-8 flex items-center justify-center p-4 shadow-xl">
+                    <QRCodeSVG value={qrPayload} size={200} level="M" />
+                  </div>
+                );
+              })()}
               <h4 className="text-2xl font-bold text-white mb-2">Pharmacy QR</h4>
               <p className="text-sm text-slate-400 mb-8 leading-relaxed">Present this code at any partnered pharmacy to automatically securely transfer your prescriptions.</p>
               <button
@@ -761,11 +1191,12 @@ const PrescriptionManager = () => {
   );
 };
 
-const AIChat = () => {
-  const [messages, setMessages] = useState([
+const AIChat = ({ uid }: { uid: string | null }) => {
+  const { profile } = usePatientStore();
+  const [messages, setMessages] = useState<Record<string, any>[]>([
     {
       role: 'ai',
-      text: 'Hello! I’m your MediBOT AI Assistant. I’ve reviewed your latest vitals and medications. How can I assist you today?',
+      text: "Hello! I'm your MediBOT AI Assistant. I've reviewed your latest vitals and medications. How can I assist you today?",
       type: 'text'
     }
   ]);
@@ -776,13 +1207,14 @@ const AIChat = () => {
 
   // Load chat history from IndexedDB on mount
   useEffect(() => {
+    if (!uid) return;
     (async () => {
-      const history = await getChatHistory('patient-alex-johnson');
+      const history = await getChatHistory(uid);
       if (history.length > 0) {
         setMessages(history.map(m => ({ role: m.role, text: m.text, type: m.type })));
       }
     })();
-  }, []);
+  }, [uid]);
 
   const quickReplies = [
     'Analyze my recent X-ray',
@@ -800,7 +1232,7 @@ const AIChat = () => {
     setIsTyping(true);
 
     // Persist user message to IndexedDB
-    saveChatMessage('patient-alex-johnson', 'user', messageText, 'text');
+    if (uid) saveChatMessage(uid, 'user', messageText, 'text');
 
     // Check for emergency keywords locally for instant UI response
     const lowerText = messageText.toLowerCase();
@@ -809,28 +1241,17 @@ const AIChat = () => {
     }
 
     try {
-      // Call the real Python AI backend with patient context
-      const response = await fetch('/api/chat/personalized', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: messageText,
-          patient_context: {
-            age: 31,
-            gender: 'Non-binary',
-            blood_type: 'B+',
-            allergies: ['NSAIDs', 'Penicillin'],
-            active_medications: ['Warfarin (5mg)', 'Lisinopril (10mg)'],
-            recent_vitals: { hr: 72, spo2: 98, steps: 4500 }
-          }
-        })
+      const { data } = await apiClient.post('/api/chat/personalized', {
+        query: messageText,
+        patient_context: profile ? {
+          age: profile.age,
+          gender: profile.gender,
+          blood_type: profile.bloodType,
+          allergies: profile.allergies,
+          active_medications: profile.activeMedications,
+          recent_vitals: profile.recentVitals,
+        } : undefined,
       });
-
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-      }
-
-      const data = await response.json();
 
       if (data.type === 'emergency') {
         setIsEmergency(true);
@@ -842,17 +1263,15 @@ const AIChat = () => {
         type: data.type || 'text'
       }]);
 
-      // Persist AI response to IndexedDB
-      saveChatMessage('patient-alex-johnson', 'ai', data.text, data.type || 'text');
+      if (uid) saveChatMessage(uid, 'ai', data.text, data.type || 'text');
     } catch (error) {
-      // Fallback: if backend is down, show a graceful error
       const offlineMsg = 'I apologize, but I am unable to connect to the AI engine right now. Please ensure the backend server is running on port 8000.';
       setMessages(prev => [...prev, {
         role: 'ai',
         text: offlineMsg,
         type: 'text'
       }]);
-      saveChatMessage('patient-alex-johnson', 'ai', offlineMsg, 'text');
+      if (uid) saveChatMessage(uid, 'ai', offlineMsg, 'text');
     } finally {
       setIsTyping(false);
     }
@@ -1011,9 +1430,64 @@ const AIChat = () => {
 export default function PatientDashboard({ onLogout }: { onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const { uid, profile } = usePatientStore();
+
+  // Offline detection + delta sync on reconnect
+  useEffect(() => {
+    const goOnline = async () => {
+      setIsOnline(true);
+      if (!uid) return;
+      try {
+        const { messages, diagnostics, vitals } = await getUnsyncedRecords();
+
+        // Sync chat messages to Firestore
+        if (messages.length > 0) {
+          for (const m of messages) {
+            await addDoc(collection(firestoreDb, 'chatHistory', uid, 'messages'), {
+              role: m.role, text: m.text, type: m.type,
+              timestamp: m.timestamp, synced: true, createdAt: serverTimestamp(),
+            });
+          }
+          await markAsSynced('chatHistory', messages.map(m => m.id!));
+        }
+
+        if (messages.length + diagnostics.length + vitals.length > 0) {
+          toast.success(`Synced ${messages.length + diagnostics.length + vitals.length} offline records`);
+        }
+      } catch (e) {
+        console.error('Delta sync failed:', e);
+      }
+    };
+    const goOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, [uid]);
+
+  const hr = profile?.recentVitals?.heartRate ?? 0;
+  const spo2 = profile?.recentVitals?.spo2 ?? 0;
+  const steps = profile?.recentVitals?.steps ?? 0;
 
   return (
     <div className="flex min-h-screen bg-[#0F1015] text-slate-200 font-sans selection:bg-sky-500/30 font-sans selection:bg-sky-100 overflow-x-hidden">
+      <AnimatePresence>
+        {!isOnline && (
+          <motion.div
+            initial={{ y: -48 }}
+            animate={{ y: 0 }}
+            exit={{ y: -48 }}
+            className="fixed top-0 left-0 right-0 z-[100] flex items-center justify-center gap-3 bg-amber-500 text-slate-900 text-xs font-bold py-2.5 shadow-lg"
+          >
+            <AlertTriangle size={14} />
+            You are offline. Changes will sync automatically when your connection returns.
+          </motion.div>
+        )}
+      </AnimatePresence>
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -1024,7 +1498,8 @@ export default function PatientDashboard({ onLogout }: { onLogout: () => void })
 
       <div className="flex-1 flex flex-col min-w-0">
         <Header
-          patientName="Alex Johnson"
+          patientName={profile?.name || auth.currentUser?.displayName || 'Patient'}
+          uid={uid}
           onMenuClick={() => setIsMenuOpen(true)}
         />
 
@@ -1037,11 +1512,11 @@ export default function PatientDashboard({ onLogout }: { onLogout: () => void })
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.2 }}
             >
-              {activeTab === 'overview' && <HealthOverview />}
-              {activeTab === 'timeline' && <MedicalTimeline />}
-              {activeTab === 'lab' && <AIDiagnosticLab />}
-              {activeTab === 'prescriptions' && <PrescriptionManager />}
-              {activeTab === 'chat' && <AIChat />}
+              {activeTab === 'overview' && <ErrorBoundary label="Health Overview"><HealthOverview heartRate={hr} spo2={spo2} steps={steps} uid={uid} /></ErrorBoundary>}
+              {activeTab === 'timeline' && <ErrorBoundary label="Medical Timeline"><MedicalTimeline uid={uid} /></ErrorBoundary>}
+              {activeTab === 'lab' && <ErrorBoundary label="AI Diagnostic Lab"><AIDiagnosticLab uid={uid} /></ErrorBoundary>}
+              {activeTab === 'prescriptions' && <ErrorBoundary label="Prescription Manager"><PrescriptionManager uid={uid} /></ErrorBoundary>}
+              {activeTab === 'chat' && <ErrorBoundary label="MediBOT Chat"><AIChat uid={uid} /></ErrorBoundary>}
             </motion.div>
           </AnimatePresence>
         </main>

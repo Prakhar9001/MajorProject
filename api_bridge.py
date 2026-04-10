@@ -13,11 +13,17 @@ import json
 import numpy as np
 from PIL import Image
 
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import uvicorn
+
+limiter = Limiter(key_func=get_remote_address)
 
 # ---------------------------------------------------------------------------
 # Path Configuration
@@ -39,15 +45,26 @@ CNN_WEIGHTS_PATH = os.path.join(ML_PROJECT_DIR, "weights", "resnet101_lung_model
 # ---------------------------------------------------------------------------
 # FastAPI App
 # ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await load_models()
+    yield
+
 app = FastAPI(
     title="MediBOT AI Core Engine",
     description="Context-Aware Personalized Medical RAG Microservice",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+_cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,7 +100,6 @@ class VisionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Startup: Load Models
 # ---------------------------------------------------------------------------
-@app.on_event("startup")
 async def load_models():
     """Load the Llama-2 RAG chain and CNN model on server start."""
     global qa_chain, embeddings, llm, reader
@@ -97,9 +113,9 @@ async def load_models():
     try:
         import easyocr
         reader = easyocr.Reader(['en'], gpu=False) # Forced CPU for compatibility
-        print("  ✅ EasyOCR loaded.")
+        print("  [OK] EasyOCR loaded.")
     except Exception as e:
-        print(f"  ⚠️ EasyOCR failed to load (Vision ingestion will be disabled): {e}")
+        print(f"  [WARN] EasyOCR failed to load (Vision ingestion will be disabled): {e}")
         reader = None
 
     # --- Step 1: Load Embeddings ---
@@ -110,9 +126,9 @@ async def load_models():
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={'device': 'cpu'}
         )
-        print("  ✅ Embeddings loaded.")
+        print("  [OK]Embeddings loaded.")
     except Exception as e:
-        print(f"  ❌ Failed to load embeddings: {e}")
+        print(f"  [ERR]Failed to load embeddings: {e}")
         return
 
     # --- Step 2: Load FAISS Vector Store ---
@@ -120,16 +136,16 @@ async def load_models():
     try:
         from langchain_community.vectorstores import FAISS
         if not os.path.exists(DB_FAISS_PATH):
-            print(f"  ❌ FAISS DB not found at {DB_FAISS_PATH}. Run ingest.py first.")
+            print(f"  [ERR]FAISS DB not found at {DB_FAISS_PATH}. Run ingest.py first.")
             return
         db = FAISS.load_local(
             DB_FAISS_PATH,
             embeddings,
             allow_dangerous_deserialization=True
         )
-        print("  ✅ FAISS Vector Store loaded.")
+        print("  [OK]FAISS Vector Store loaded.")
     except Exception as e:
-        print(f"  ❌ Failed to load FAISS: {e}")
+        print(f"  [ERR]Failed to load FAISS: {e}")
         return
 
     # --- Step 3: Load LLM and create QA Chain ---
@@ -140,7 +156,7 @@ async def load_models():
         from langchain.chains import RetrievalQA
 
         if not os.path.exists(MODEL_PATH):
-            print(f"  ❌ Model not found at {MODEL_PATH}.")
+            print(f"  [ERR]Model not found at {MODEL_PATH}.")
             return
 
         llm = CTransformers(
@@ -180,14 +196,14 @@ Helpful answer:"""
             chain_type_kwargs={"prompt": prompt}
         )
 
-        print("  ✅ Llama-2 QA Chain ready.")
+        print("  [OK]Llama-2 QA Chain ready.")
     except Exception as e:
-        print(f"  ❌ Failed to load LLM: {e}")
+        print(f"  [ERR]Failed to load LLM: {e}")
         traceback.print_exc()
         return
 
     print("=" * 60)
-    print("  ✅ MediBOT AI Core Engine is ONLINE.")
+    print("  [OK]MediBOT AI Core Engine is ONLINE.")
     print("=" * 60)
 
 # ---------------------------------------------------------------------------
@@ -204,7 +220,8 @@ async def root():
     }
 
 @app.post("/api/chat/personalized")
-async def personalized_chat(request: ChatRequest):
+@limiter.limit("20/minute")
+async def personalized_chat(request: Request, request_body: ChatRequest):
     """
     PATENT CORE ENDPOINT:
     Receives a patient's medical question AND their clinical context,
@@ -216,8 +233,8 @@ async def personalized_chat(request: ChatRequest):
     try:
         # Build the patient info string for context injection
         patient_info_str = ""
-        if request.patient_context:
-            ctx = request.patient_context
+        if request_body.patient_context:
+            ctx = request_body.patient_context
             info_parts = []
             if ctx.age: info_parts.append(f"Age: {ctx.age}")
             if ctx.gender: info_parts.append(f"Gender: {ctx.gender}")
@@ -228,19 +245,13 @@ async def personalized_chat(request: ChatRequest):
             if info_parts:
                 patient_info_str = " | ".join(info_parts)
 
-        # Inject patient context INTO the query so RetrievalQA passes it through {question}
-        enriched_query = request.query
+        enriched_query = request_body.query
         if patient_info_str:
-            enriched_query = f"[PATIENT CONTEXT: {patient_info_str}] {request.query}"
+            enriched_query = f"[PATIENT CONTEXT: {patient_info_str}] {request_body.query}"
 
-        # Run the QA chain
-        response = qa_chain.invoke({
-            "query": enriched_query
-        })
-
+        response = qa_chain.invoke({"query": enriched_query})
         answer = response.get("result", "I could not generate an answer.")
 
-        # Extract source document references
         sources = []
         for doc in response.get("source_documents", []):
             sources.append({
@@ -248,11 +259,10 @@ async def personalized_chat(request: ChatRequest):
                 "page": doc.metadata.get("page", "N/A")
             })
 
-        # Detect safety flags (simple keyword check)
         safety_flag = False
-        if request.patient_context and request.patient_context.allergies:
-            for allergy in request.patient_context.allergies:
-                if allergy.lower() in request.query.lower() or allergy.lower() in answer.lower():
+        if request_body.patient_context and request_body.patient_context.allergies:
+            for allergy in request_body.patient_context.allergies:
+                if allergy.lower() in request_body.query.lower() or allergy.lower() in answer.lower():
                     safety_flag = True
                     break
 
@@ -270,7 +280,8 @@ async def personalized_chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
 
 @app.post("/api/vision/analyze_xray")
-async def analyze_xray(request: VisionRequest):
+@limiter.limit("10/minute")
+async def analyze_xray(request: Request, request_body: VisionRequest):
     """
     Receives a base64-encoded X-ray image and runs it through
     the ResNet101 CNN model for lung disease classification.
@@ -280,7 +291,7 @@ async def analyze_xray(request: VisionRequest):
         from Lung_Disease_Detection_CNN_Model import predict_lung_disease
 
         # Decode the base64 image
-        image_data = request.image_base64
+        image_data = request_body.image_base64
         if "," in image_data:
             image_data = image_data.split(",")[1]
 
@@ -314,7 +325,8 @@ async def analyze_xray(request: VisionRequest):
         raise HTTPException(status_code=500, detail=f"Vision Analysis Error: {str(e)}")
 
 @app.post("/api/vision/extract_report")
-async def extract_report(request: VisionRequest):
+@limiter.limit("10/minute")
+async def extract_report(request: Request, request_body: VisionRequest):
     """
     OCR ENDPOINT:
     Extracts text from medical reports and uses the LLM to structure the information.
@@ -324,7 +336,7 @@ async def extract_report(request: VisionRequest):
 
     try:
         # Decode the image
-        image_data = request.image_base64
+        image_data = request_body.image_base64
         if "," in image_data:
             image_data = image_data.split(",")[1]
         
