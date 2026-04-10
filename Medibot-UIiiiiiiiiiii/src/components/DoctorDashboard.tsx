@@ -4,12 +4,12 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { 
-  Stethoscope, 
-  Search, 
-  Activity, 
-  ShieldCheck, 
-  BrainCircuit, 
+import {
+  Stethoscope,
+  Search,
+  Activity,
+  ShieldCheck,
+  BrainCircuit,
   Loader2,
   LayoutDashboard,
   History,
@@ -17,70 +17,49 @@ import {
   Pill,
   LogOut,
   Heart,
-  Watch,
   AlertTriangle,
-  QrCode,
-  ChevronRight,
   Bell,
   MoreVertical,
   Layers,
   FileText,
   User,
-  CheckCircle2,
   Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
+import { collection, query, where, getDocs } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
+import type { PatientProfile } from '../store/usePatientStore';
 
-// --- Mock Data ---
+// Extend PatientProfile with display-only fields derived at load time
+interface FirestorePatient extends PatientProfile {
+  id: string;
+  priority: 'red' | 'yellow' | 'green';
+  status: string;
+  vitals: { hr: number; spo2: number; temp: number };
+  history: { date: string; event: string; type: string }[];
+  hrData: { value: number }[];
+  spo2Data: { value: number }[];
+}
 
-const mockPatients = [
-  { 
-    id: '1', 
-    name: 'Sarah Miller', 
-    priority: 'red', 
-    status: 'High Vitals',
-    age: 42,
-    gender: 'Female',
-    vitals: { hr: 112, spo2: 92, temp: 101.2 },
-    history: [
-      { date: '2024-03-10', event: 'Acute Respiratory Distress', type: 'emergency' },
-      { date: '2023-11-15', event: 'Type 2 Diabetes Diagnosis', type: 'diagnosis' },
-      { date: '2022-06-20', event: 'Knee Arthroscopy', type: 'surgery' },
-    ],
-    hrData: Array.from({ length: 20 }, (_, i) => ({ value: 100 + Math.random() * 20 })),
-    spo2Data: Array.from({ length: 20 }, (_, i) => ({ value: 90 + Math.random() * 5 })),
-  },
-  { 
-    id: '2', 
-    name: 'James Wilson', 
-    priority: 'yellow', 
-    status: 'X-ray Pending',
-    age: 58,
-    gender: 'Male',
-    vitals: { hr: 78, spo2: 96, temp: 98.6 },
-    history: [
-      { date: '2024-02-28', event: 'Chest Pain Consultation', type: 'checkup' },
-      { date: '2021-09-12', event: 'Hypertension Management', type: 'med' },
-    ],
-    hrData: Array.from({ length: 20 }, (_, i) => ({ value: 70 + Math.random() * 15 })),
-    spo2Data: Array.from({ length: 20 }, (_, i) => ({ value: 95 + Math.random() * 4 })),
-  },
-  { 
-    id: '3', 
-    name: 'Alex Johnson', 
-    priority: 'green', 
-    status: 'Stable',
-    age: 31,
-    gender: 'Non-binary',
-    vitals: { hr: 72, spo2: 99, temp: 98.4 },
-    history: [
-      { date: '2024-01-15', event: 'Annual Physical', type: 'checkup' },
-    ],
-    hrData: Array.from({ length: 20 }, (_, i) => ({ value: 65 + Math.random() * 10 })),
-    spo2Data: Array.from({ length: 20 }, (_, i) => ({ value: 98 + Math.random() * 2 })),
-  },
-];
+function deriveDisplayFields(uid: string, p: PatientProfile): FirestorePatient {
+  const hr = p.recentVitals?.heartRate ?? 72;
+  const spo2 = p.recentVitals?.spo2 ?? 98;
+  const priority: 'red' | 'yellow' | 'green' =
+    hr > 100 || spo2 < 94 ? 'red' : hr > 90 || spo2 < 97 ? 'yellow' : 'green';
+  const status =
+    priority === 'red' ? 'High Vitals' : priority === 'yellow' ? 'Monitor' : 'Stable';
+  return {
+    ...p,
+    id: uid,
+    priority,
+    status,
+    vitals: { hr, spo2, temp: 98.6 },
+    history: [],
+    hrData: Array.from({ length: 20 }, () => ({ value: hr + Math.random() * 10 - 5 })),
+    spo2Data: Array.from({ length: 20 }, () => ({ value: spo2 + Math.random() * 2 - 1 })),
+  };
+}
 
 // --- Components ---
 
@@ -401,13 +380,47 @@ const AIDiagnosticPanel = () => {
 // --- Main Dashboard ---
 
 export default function DoctorDashboard({ onLogout }: { onLogout: () => void }) {
-  const [activePatientId, setActivePatientId] = useState('1');
-  const activePatient = mockPatients.find(p => p.id === activePatientId) || mockPatients[0];
+  const [patients, setPatients] = useState<FirestorePatient[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activePatientId, setActivePatientId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const doctorUid = auth.currentUser?.uid;
+    if (!doctorUid) {
+      setLoading(false);
+      return;
+    }
+
+    const fetchPatients = async () => {
+      try {
+        const q = query(
+          collection(db, 'patients'),
+          where('doctorUid', '==', doctorUid)
+        );
+        const snapshot = await getDocs(q);
+        const loaded: FirestorePatient[] = snapshot.docs.map(d =>
+          deriveDisplayFields(d.id, d.data() as PatientProfile)
+        );
+        setPatients(loaded);
+        if (loaded.length > 0) setActivePatientId(loaded[0].id);
+      } catch (err) {
+        console.error('Failed to load patients:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPatients();
+  }, []);
+
+  const activePatient = patients.find(p => p.id === activePatientId) ?? null;
+  const doctorName = auth.currentUser?.displayName ?? 'Doctor';
+  const initials = doctorName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
   return (
     <div className="flex h-screen bg-slate-100 font-sans selection:bg-sky-100 overflow-hidden">
       <Sidebar onLogout={onLogout} />
-      
+
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-20 bg-white border-b border-slate-200 px-8 flex items-center justify-between z-20">
           <div className="flex items-center gap-4">
@@ -420,23 +433,37 @@ export default function DoctorDashboard({ onLogout }: { onLogout: () => void }) 
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right hidden sm:block">
-              <p className="text-sm font-bold text-slate-900">Dr. Aris Thorne</p>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Chief Medical Officer</p>
+              <p className="text-sm font-bold text-slate-900">{doctorName}</p>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Attending Physician</p>
             </div>
             <div className="w-10 h-10 rounded-2xl bg-sky-500 flex items-center justify-center text-white font-bold shadow-lg shadow-sky-100">
-              AT
+              {initials || <User size={18} />}
             </div>
           </div>
         </header>
-        
+
         <main className="flex-1 flex overflow-hidden">
-          <PatientList 
-            patients={mockPatients} 
-            activeId={activePatientId} 
-            onSelect={setActivePatientId} 
-          />
-          <ActivePatientProfile patient={activePatient} />
-          <AIDiagnosticPanel />
+          {loading ? (
+            <div className="flex-1 flex items-center justify-center">
+              <Loader2 className="animate-spin text-sky-500" size={36} />
+            </div>
+          ) : patients.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-400">
+              <User size={48} className="text-slate-200" />
+              <p className="text-lg font-semibold">No patients assigned yet</p>
+              <p className="text-sm">Patients who select you as their doctor will appear here.</p>
+            </div>
+          ) : (
+            <>
+              <PatientList
+                patients={patients}
+                activeId={activePatientId ?? ''}
+                onSelect={setActivePatientId}
+              />
+              {activePatient && <ActivePatientProfile patient={activePatient} />}
+              <AIDiagnosticPanel />
+            </>
+          )}
         </main>
       </div>
     </div>

@@ -19,6 +19,7 @@ import {
 } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { createPatientDoc } from '../lib/patientService';
 
 type Role = 'patient' | 'doctor';
 
@@ -53,8 +54,14 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
         await setDoc(doc(db, 'users', user.uid), {
           email: user.email,
           role: role,
+          displayName: email.split('@')[0],
           createdAt: new Date().toISOString()
         });
+
+        // Create patient profile document for new patient accounts
+        if (role === 'patient') {
+          await createPatientDoc(user.uid, email.split('@')[0]);
+        }
 
         onLogin(role, email);
       } else {
@@ -98,8 +105,12 @@ export default function LoginGateway({ onLogin }: LoginGatewayProps) {
         await setDoc(doc(db, 'users', user.uid), {
           email: user.email,
           role: role,
+          displayName: user.displayName || user.email?.split('@')[0] || '',
           createdAt: new Date().toISOString()
         });
+        if (role === 'patient') {
+          await createPatientDoc(user.uid, user.displayName || user.email?.split('@')[0] || '');
+        }
         onLogin(role, user.email || '');
       }
     } catch (err: any) {
