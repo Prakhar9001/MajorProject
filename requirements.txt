@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+langchain
+langchain-community
+ctransformers
+faiss-cpu
+sentence-transformers
+Pillow
+numpy
+easyocr
+torch
+torchvision
+python-multipart
+pydantic
+slowapi

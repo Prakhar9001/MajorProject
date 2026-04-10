@@ -44,3 +44,14 @@ llama-2-7b-chat.Q4_K_M.gguf
 db.sqlite3
 /MediBOT/data/vector_store/index.faiss
 /MediBOT/data/vector_store/index.pkl
+agentdb.rvf
+agentdb.rvf.lock
+ruvector.db
+
+# AI tooling state (local only)
+.claude/
+.claude-flow/
+.swarm/
+
+# Vite PWA build output (dev)
+dev-dist/
